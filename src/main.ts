@@ -156,6 +156,10 @@ export default class KuzuPlugin extends Plugin {
 	private async persistDatabase(): Promise<void> {
 		try {
 			const files = await this.kuzuClient.persist();
+			// Check if we got any files back
+			if (Object.keys(files).length === 0) {
+				console.warn("No database files returned during persist operation!");
+			}
 			const json = JSON.stringify(files);
 			const bytes = new TextEncoder().encode(json);
 			const base64 = this.bufferToBase64(bytes);
