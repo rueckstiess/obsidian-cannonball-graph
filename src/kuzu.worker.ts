@@ -117,27 +117,7 @@ async function handleInit(request: KuzuInitRequest): Promise<KuzuResponse> {
     // Create database and connection
     db = new kuzuSync.Database('kuzu_data.db');
     conn = new kuzuSync.Connection(db);
-
-    // Add this test code
-    try {
-      console.log("Testing conn.query behavior:");
-      const testResult = conn.query("RETURN 1 as test");
-      console.log("Query result type:", typeof testResult);
-      console.log("Is Promise?", testResult instanceof Promise);
-      if (testResult instanceof Promise) {
-        console.log("conn.query is asynchronous, returns a Promise");
-      } else {
-        console.log("conn.query is synchronous, returns direct result");
-        console.log("Result:", testResult);
-      }
-    } catch (error) {
-      console.error("Test query failed:", error);
-    }
-
     isInitialized = true;
-
-
-
 
     return { id: request.id, type: 'init-success' };
   } catch (error) {
@@ -160,14 +140,16 @@ function handleQuery(request: KuzuQueryRequest): KuzuResponse {
       throw new Error('Database not initialized');
     }
 
-    // Execute query
+    // Execute query (synchronous in WASM build)
     const result = conn.query(request.cypher);
-    const resultStr = result.toString();
+
+    // Get the structured results using the native getAllObjects method
+    const structuredData = result.getAllObjects();
 
     return {
       id: request.id,
       type: 'query-success',
-      data: resultStr
+      data: JSON.stringify(structuredData)
     };
   } catch (error) {
     return {
@@ -189,7 +171,7 @@ function handleInsert(request: KuzuInsertRequest): KuzuResponse {
       throw new Error('Database not initialized');
     }
 
-    // Execute insert
+    // Execute insert (synchronous in WASM build)
     conn.query(request.cypher);
 
     return { id: request.id, type: 'insert-success' };

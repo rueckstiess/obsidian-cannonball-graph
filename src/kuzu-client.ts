@@ -9,7 +9,7 @@ import type {
   KuzuPersistRequest,
   KuzuQuerySuccess,
   KuzuPersistSuccess
-} from './kuzu-messages'
+} from './kuzu-messages';
 
 /**
  * Client for interacting with the KuzuDB worker.
@@ -27,7 +27,7 @@ export class KuzuClient {
   /**
    * Creates a new KuzuDB client.
    * 
-   * @param KuzuWorker Constructor that creates a new Worker instance
+   * @param KuzuWorker Function that creates a new Worker instance
    */
   constructor(KuzuWorker: new () => Worker) {
     this.worker = new KuzuWorker();
@@ -120,8 +120,15 @@ export class KuzuClient {
       type: 'query',
       cypher
     });
-    console.log("client query response", response);
-    return response.data as T;
+
+    // Parse the JSON result
+    try {
+      return JSON.parse(response.data) as T;
+    } catch (error) {
+      // If parsing fails, return the raw string data
+      console.error("Error parsing query result:", error);
+      return response.data as unknown as T;
+    }
   }
 
   /**
