@@ -1,3 +1,7 @@
+
+export type QueryResult = Record<string, any>[];
+export type QueryResults = Record<string, any>[][];
+
 /**
  * Base interface for all KuzuDB worker messages.
  */
@@ -41,15 +45,6 @@ export interface KuzuQueryRequest extends KuzuBaseRequest {
 }
 
 /**
- * Request to execute a Cypher statement that modifies the database.
- */
-export interface KuzuInsertRequest extends KuzuBaseRequest {
-  type: 'insert';
-  /** The Cypher statement to execute */
-  cypher: string;
-}
-
-/**
  * Request to persist the database to storage.
  */
 export interface KuzuPersistRequest extends KuzuBaseRequest {
@@ -68,16 +63,9 @@ export interface KuzuInitSuccess extends KuzuBaseSuccess {
  */
 export interface KuzuQuerySuccess extends KuzuBaseSuccess {
   type: 'query-success';
-  /** The query results as a JSON string */
-  data: string;
+  data: QueryResult | QueryResults;
 }
 
-/**
- * Successful response to an insert request.
- */
-export interface KuzuInsertSuccess extends KuzuBaseSuccess {
-  type: 'insert-success';
-}
 
 /**
  * Successful response to a persist request.
@@ -105,7 +93,6 @@ export interface KuzuErrorResponse extends KuzuWorkerMessage {
 export type KuzuRequest =
   | KuzuInitRequest
   | KuzuQueryRequest
-  | KuzuInsertRequest
   | KuzuPersistRequest;
 
 /**
@@ -114,7 +101,6 @@ export type KuzuRequest =
 export type KuzuSuccessResponse =
   | KuzuInitSuccess
   | KuzuQuerySuccess
-  | KuzuInsertSuccess
   | KuzuPersistSuccess;
 
 /**

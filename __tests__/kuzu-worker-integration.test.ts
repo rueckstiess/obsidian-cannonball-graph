@@ -69,22 +69,6 @@ class MockKuzuWorker {
           }
           break;
 
-        case 'insert':
-          if (data.cypher.includes('ERROR')) {
-            response = {
-              id,
-              type: 'error',
-              error: 'Insert syntax error',
-              requestType: 'insert'
-            };
-          } else {
-            response = {
-              id,
-              type: 'insert-success'
-            };
-          }
-          break;
-
         case 'persist':
           response = {
             id,
@@ -156,9 +140,11 @@ describe('KuzuClient Integration Tests', () => {
     await expect(client.query('ERROR in query')).rejects.toThrow('Query syntax error');
   });
 
-  it('should execute an insert statement successfully', async () => {
+  it('should execute a query statement successfully', async () => {
     await client.init();
-    await expect(client.insert('CREATE (n:Test)')).resolves.toBeUndefined();
+
+    const result = await client.query('CREATE (n:Test)')
+    expect(result).toBeDefined();
   });
 
   it('should handle transaction with multiple statements', async () => {
@@ -166,7 +152,7 @@ describe('KuzuClient Integration Tests', () => {
     await expect(client.transaction([
       'CREATE (n:Test1)',
       'CREATE (n:Test2)'
-    ])).resolves.toBeUndefined();
+    ])).resolves.toBeDefined();
   });
 
   it('should persist and return database files', async () => {

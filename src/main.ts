@@ -131,7 +131,7 @@ export default class KuzuPlugin extends Plugin {
 			name: "Parse current document to graph",
 			editorCallback: async (editor) => {
 				try {
-					await this.ensureReady();
+					// await this.ensureReady();
 
 					// Get current editor content and file path
 					const content = editor.getValue();
@@ -160,15 +160,14 @@ export default class KuzuPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: "show-all-nodes-and-edges",
+			id: "show-database-contents",
 			name: "Show Database Contents",
 			callback: async () => {
 				try {
-					await this.ensureReady();
-					await this.kuzuClient.isHealthy();
+					// await this.ensureReady();
 
 					// // Query heading nodes as an example
-					const result = await this.kuzuClient.query("RETURN 1+1");
+					const result = await this.kuzuClient.query("MATCH (n:Element) RETURN n.id AS id, n.type AS type, n.text AS text");
 					console.log('Database contents:', result);
 				} catch (error) {
 					console.error('Failed to query AST nodes:', error);

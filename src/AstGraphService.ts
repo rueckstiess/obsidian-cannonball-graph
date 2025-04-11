@@ -28,8 +28,9 @@ export class AstGraphService {
    */
   public async initSchema(): Promise<void> {
     await this.kuzuClient.transaction([
-      'DROP TABLE Element',
-      'DROP TABLE LINK',
+      // Drop existing tables if they exist
+      'DROP TABLE IF EXISTS LINK',
+      'DROP TABLE IF EXISTS Element',
 
       // Node tables for different AST node types
       `CREATE NODE TABLE Element (
@@ -41,13 +42,15 @@ export class AstGraphService {
         ref STRING,           // like ^alt1 (used for linking)
         sourceFile STRING,    // which markdown file this came from
         line INT32,           // line number in file
-        PRIMARY KEY(id)`,
+        PRIMARY KEY(id)
+      )`,
 
       // Edge tables for relationships
       `CREATE REL TABLE LINK(
         FROM Element TO Element,
         type STRING,  // e.g. "CONTAINS", "DEPENDS_ON", "CHOSEN", etc.
-        rank INT32    // optional: ordering among children(if needed)`
+        rank INT32    // optional: ordering among children(if needed)
+      )`
     ]);
 
     this.isReady = true;
@@ -133,7 +136,8 @@ export class AstGraphService {
     // Execute the transaction to create all nodes
     if (cypher.length > 0) {
       console.log('Creating nodes:', cypher);
-      await this.kuzuClient.transaction(cypher);
+      const result = await this.kuzuClient.queries(cypher);
+      console.log('Node creation result:', result);
     }
   }
 

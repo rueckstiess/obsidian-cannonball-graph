@@ -13,15 +13,16 @@ import type {
   KuzuRequest,
   KuzuInitRequest,
   KuzuQueryRequest,
-  KuzuInsertRequest,
   KuzuPersistRequest,
   KuzuResponse,
-  KuzuErrorResponse
+  KuzuErrorResponse,
+  QueryResult,
+  QueryResults
 } from './kuzu-messages';
 
 // Import KuzuDB
 const raw = require('kuzu-wasm/sync'); // eslint-disable-line
-const kuzuSync = raw.default || raw;
+const kuzu = raw.default || raw;
 
 // Worker context
 const ctx: DedicatedWorkerGlobalScope = self as any;
@@ -49,7 +50,7 @@ function fromBase64(b64: string): Uint8Array {
  * Serializes a directory in the Kuzu filesystem to a map of filenames to Base64 content.
  */
 async function serializeDirectory(dir: string): Promise<Record<string, string>> {
-  const FS = kuzuSync.getFS();
+  const FS = kuzu.getFS();
 
   try {
     const files = FS.readdir(dir).filter((f: string) => f !== '.' && f !== '..');
@@ -76,7 +77,7 @@ async function serializeDirectory(dir: string): Promise<Record<string, string>> 
  * Restores a directory in the Kuzu filesystem from a map of filenames to Base64 content.
  */
 function restoreDirectory(dir: string, files: Record<string, string>) {
-  const FS = kuzuSync.getFS();
+  const FS = kuzu.getFS();
 
   try {
     // Create the directory if it doesn't exist
@@ -106,7 +107,7 @@ function restoreDirectory(dir: string, files: Record<string, string>) {
 async function handleInit(request: KuzuInitRequest): Promise<KuzuResponse> {
   try {
     // Initialize KuzuDB WASM module
-    await kuzuSync.init();
+    await kuzu.init();
 
     // Restore persisted data if provided
     if (request.dbData) {
@@ -115,8 +116,8 @@ async function handleInit(request: KuzuInitRequest): Promise<KuzuResponse> {
     }
 
     // Create database and connection
-    db = new kuzuSync.Database('kuzu_data.db');
-    conn = new kuzuSync.Connection(db);
+    db = new kuzu.Database('kuzu_data.db');
+    conn = new kuzu.Connection(db);
     isInitialized = true;
 
     return { id: request.id, type: 'init-success' };
@@ -131,32 +132,62 @@ async function handleInit(request: KuzuInitRequest): Promise<KuzuResponse> {
 }
 
 
-function safeJson(obj: any): any {
-  if (obj === null || obj === undefined) return obj;
+/**
+ * Type-safe result extraction from a Kuzu QueryResult
+ */
 
-  if (typeof obj === "bigint") {
-    // Safest default: convert to string
-    return obj.toString();
+function extractQueryResult(result: any): QueryResult {
+
+  // check if result was successful
+  if (!result.isSuccess()) {
+    console.error("Query failed:", result.getErrorMessage());
+    throw new Error("Query failed: " + result.getErrorMessage());
   }
 
-  if (Array.isArray(obj)) {
-    return obj.map(safeJson);
-  }
+  const columnNames: string[] = result.getColumnNames();
+  const columnTypes: string[] = result.getColumnTypes();
+  const querySummary: Record<string, any> = result.getQuerySummary();
+  const numRows: number = result.getNumTuples();
 
-  if (typeof obj === "object") {
-    const safe: Record<string, any> = {};
-    for (const [key, value] of Object.entries(obj)) {
-      safe[key] = safeJson(value);
+  console.log(`Request returned ${numRows} results in ${querySummary.executionTime}ms:\n${result.toString()}`)
+
+  const rows: Record<string, any>[] = result.getAllRows().map((row: any) => {
+    // convert kuzu value
+    const record: Record<string, any> = {};
+    for (let i = 0; i < columnNames.length; i++) {
+      const key = columnNames[i];
+      const value = row[i];
+      const type = columnTypes[i];
+      record[key] = convertKuzuValue(value, type);
     }
-    return safe;
-  }
+    return record;
+  });
 
-  return obj;
+  return rows;
 }
 
+function convertKuzuValue(value: any, type: any): any {
+  if (value === null || value === undefined) return null;
+  switch (type) {
+    case 'INT64':
+      // Convert BigInt to string to avoid serialization issues
+      return value.toString();
+    case 'INT32':
+    case 'DOUBLE':
+      return Number(value);
+    case 'STRING':
+      return String(value);
+    case 'BOOLEAN':
+      return Boolean(value);
+    case 'LIST':
+      return value.map((item: any) => convertKuzuValue(item, typeof item));
+    default:
+      return value;
+  }
+}
 
 /**
- * Handles query requests.
+ * Replace handleQuery implementation with this logic:
  */
 function handleQuery(request: KuzuQueryRequest): KuzuResponse {
   try {
@@ -166,13 +197,25 @@ function handleQuery(request: KuzuQueryRequest): KuzuResponse {
 
     const result = conn.query(request.cypher);
 
-    const structuredData = result.getAllObjects()
-    const safeData = safeJson(structuredData);
+    // Check if the result is a single query result or multiple
+    let data: QueryResult | QueryResults;
+    if (!result.hasNextQueryResult()) {
+      data = extractQueryResult(result);
+    } else {
+      data = [];
+      do {
+        const partialResult = result.getNextQueryResult();
+        if (partialResult) {
+          data.push(extractQueryResult(partialResult));
+        }
+      } while (result.hasNextQueryResult());
+      data = data.filter((result: QueryResult) => result.length > 0);
+    }
 
     return {
       id: request.id,
       type: "query-success",
-      data: JSON.stringify(safeData)
+      data: data
     };
   } catch (error) {
     return {
@@ -183,29 +226,8 @@ function handleQuery(request: KuzuQueryRequest): KuzuResponse {
     };
   }
 }
-/**
- * Handles insert requests.
- */
-function handleInsert(request: KuzuInsertRequest): KuzuResponse {
-  try {
-    // Check if initialized
-    if (!isInitialized) {
-      throw new Error('Database not initialized');
-    }
 
-    // Execute insert (synchronous in WASM build)
-    conn.query(request.cypher);
 
-    return { id: request.id, type: 'insert-success' };
-  } catch (error) {
-    return {
-      id: request.id,
-      type: 'error',
-      error: error.message || 'Unknown insert error',
-      requestType: 'insert'
-    };
-  }
-}
 
 /**
  * Handles persist requests.
@@ -246,9 +268,6 @@ async function handleMessage(request: KuzuRequest): Promise<KuzuResponse> {
 
       case 'query':
         return handleQuery(request as KuzuQueryRequest);
-
-      case 'insert':
-        return handleInsert(request as KuzuInsertRequest);
 
       case 'persist':
         return await handlePersist(request as KuzuPersistRequest);

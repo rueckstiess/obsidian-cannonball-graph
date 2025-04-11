@@ -8,7 +8,6 @@ import type {
   KuzuErrorResponse,
   KuzuQuerySuccess,
   KuzuInitSuccess,
-  KuzuInsertSuccess,
   KuzuPersistSuccess
 } from '../src/kuzu-messages';
 
@@ -253,24 +252,6 @@ describe('KuzuClient', () => {
     });
   });
 
-  describe('insert', () => {
-    it('should execute an insert statement', async () => {
-      const insertStatement = 'CREATE (n:Person {name: "Test"})';
-      const insertPromise = client.insert(insertStatement);
-
-      // Verify the request
-      expect(mockWorker.lastRequestType).toBe('insert');
-      expect(mockWorker.requests[0].cypher).toBe(insertStatement);
-
-      // Mock successful response
-      mockWorker.respondWith({
-        id: mockWorker.lastRequestId!,
-        type: 'insert-success'
-      } as KuzuInsertSuccess);
-
-      await expect(insertPromise).resolves.toBeUndefined();
-    });
-  });
 
   describe('persist', () => {
     it('should persist database and return files', async () => {
@@ -297,22 +278,6 @@ describe('KuzuClient', () => {
       expect(mockWorker.requests.length).toBe(0);
     });
 
-    it('should use insert for a single statement', async () => {
-      const stmt = 'CREATE (n:Test)';
-      const transactionPromise = client.transaction([stmt]);
-
-      // Should use insert for single statement
-      expect(mockWorker.lastRequestType).toBe('insert');
-      expect(mockWorker.requests[0].cypher).toBe(stmt);
-
-      mockWorker.respondWith({
-        id: mockWorker.lastRequestId!,
-        type: 'insert-success'
-      } as KuzuInsertSuccess);
-
-      await expect(transactionPromise).resolves.toBeUndefined();
-    });
-
     it('should wrap multiple statements in a transaction', async () => {
       const stmts = [
         'CREATE (n:Test1)',
@@ -321,8 +286,8 @@ describe('KuzuClient', () => {
 
       const transactionPromise = client.transaction(stmts);
 
-      // Should use insert with transaction wrapper
-      expect(mockWorker.lastRequestType).toBe('insert');
+      // Should use query with transaction wrapper
+      expect(mockWorker.lastRequestType).toBe('query');
       expect(mockWorker.requests[0].cypher).toContain('BEGIN TRANSACTION');
       expect(mockWorker.requests[0].cypher).toContain('COMMIT');
       expect(mockWorker.requests[0].cypher).toContain(stmts[0]);
@@ -330,8 +295,8 @@ describe('KuzuClient', () => {
 
       mockWorker.respondWith({
         id: mockWorker.lastRequestId!,
-        type: 'insert-success'
-      } as KuzuInsertSuccess);
+        type: 'query-success'
+      } as KuzuQuerySuccess);
 
       await expect(transactionPromise).resolves.toBeUndefined();
     });

@@ -5,7 +5,6 @@ import type {
   KuzuResponse,
   KuzuInitRequest,
   KuzuQueryRequest,
-  KuzuInsertRequest,
   KuzuPersistRequest,
   KuzuQuerySuccess,
   KuzuPersistSuccess
@@ -123,7 +122,7 @@ export class KuzuClient {
 
     // Parse the JSON result
     try {
-      return JSON.parse(response.data) as T;
+      return response.data as T;
     } catch (error) {
       // If parsing fails, return the raw string data
       console.error("Error parsing query result:", error);
@@ -131,17 +130,16 @@ export class KuzuClient {
     }
   }
 
-  /**
-   * Executes a Cypher statement that modifies the database.
-   * 
-   * @param cypher The Cypher statement to execute
-   * @returns Promise that resolves when the operation is complete
-   */
-  async insert(cypher: string): Promise<void> {
-    await this.sendMessage<KuzuInsertRequest, KuzuSuccessResponse>({
-      type: 'insert',
-      cypher
-    });
+  async queries(cypher: string[]): Promise<any[]> {
+    if (cypher.length === 0) {
+      return [];
+    }
+    // For a single statement, just use query
+    if (cypher.length === 1) {
+      return this.query(cypher[0]);
+    }
+    // wait for all promises to resolve
+    return await Promise.all(cypher.map((statement) => this.query(statement)));
   }
 
   /**
@@ -163,14 +161,14 @@ export class KuzuClient {
    * @param statements Array of Cypher statements to execute in a transaction
    * @returns Promise that resolves when the transaction is complete
    */
-  async transaction(statements: string[]): Promise<void> {
+  async transaction(statements: string[]): Promise<any[]> {
     if (statements.length === 0) {
-      return;
+      return [];
     }
 
-    // For a single statement, just use insert
+    // For a single statement, just use query
     if (statements.length === 1) {
-      return this.insert(statements[0]);
+      return this.query(statements[0]);
     }
 
     // For multiple statements, wrap in a transaction
@@ -180,7 +178,7 @@ export class KuzuClient {
       COMMIT;
     `;
 
-    await this.insert(transactionCypher);
+    return this.query(transactionCypher);
   }
 
   /**
@@ -193,6 +191,7 @@ export class KuzuClient {
       await this.query('RETURN 1 as test');
       return true;
     } catch (error) {
+      console.error('Database health check failed:', error);
       return false;
     }
   }
