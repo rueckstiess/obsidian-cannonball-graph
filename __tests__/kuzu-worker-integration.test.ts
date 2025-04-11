@@ -50,7 +50,7 @@ class MockKuzuWorker {
             response = {
               id,
               type: 'query-success',
-              data: JSON.stringify({ test: 1 })
+              data: [{ test: 1 }]  // Return array instead of JSON string
             };
           } else if (data.cypher.includes('ERROR')) {
             response = {
@@ -64,7 +64,7 @@ class MockKuzuWorker {
             response = {
               id,
               type: 'query-success',
-              data: JSON.stringify({ results: [{ example: 'data' }] })
+              data: [{ example: 'data' }]  // Return array instead of JSON string
             };
           }
           break;
@@ -132,7 +132,7 @@ describe('KuzuClient Integration Tests', () => {
   it('should initialize and execute a query', async () => {
     await client.init();
     const results = await client.query('MATCH (n) RETURN n');
-    expect(results).toEqual({ results: [{ example: 'data' }] });
+    expect(results).toEqual([{ example: 'data' }]);
   });
 
   it('should handle errors in query execution', async () => {
@@ -143,16 +143,17 @@ describe('KuzuClient Integration Tests', () => {
   it('should execute a query statement successfully', async () => {
     await client.init();
 
-    const result = await client.query('CREATE (n:Test)')
-    expect(result).toBeDefined();
+    const result = await client.query('CREATE (n:Test)');
+    expect(result).toEqual([{ example: 'data' }]);
   });
 
   it('should handle transaction with multiple statements', async () => {
     await client.init();
-    await expect(client.transaction([
+    const result = await client.transaction([
       'CREATE (n:Test1)',
       'CREATE (n:Test2)'
-    ])).resolves.toBeDefined();
+    ]);
+    expect(result).toEqual([{ example: 'data' }]);
   });
 
   it('should persist and return database files', async () => {

@@ -207,9 +207,9 @@ describe('KuzuClient', () => {
   });
 
   describe('query', () => {
-    it('should execute a query and parse JSON results', async () => {
+    it('should execute a query and return array results', async () => {
       const testQuery = 'MATCH (n) RETURN n LIMIT 10';
-      const queryResults = JSON.stringify({ results: [{ test: 1 }] });
+      const queryResults = [{ test: 1 }]; // Array instead of JSON string
 
       const queryPromise = client.query(testQuery);
 
@@ -217,41 +217,33 @@ describe('KuzuClient', () => {
       expect(mockWorker.lastRequestType).toBe('query');
       expect(mockWorker.requests[0].cypher).toBe(testQuery);
 
-      // Mock successful response with JSON data
+      // Mock successful response with array data
       mockWorker.respondWith({
         id: mockWorker.lastRequestId!,
         type: 'query-success',
         data: queryResults
       } as KuzuQuerySuccess);
 
-      await expect(queryPromise).resolves.toEqual({ results: [{ test: 1 }] });
+      await expect(queryPromise).resolves.toEqual([{ test: 1 }]);
     });
 
-    it('should handle JSON parsing errors', async () => {
-      const originalConsoleError = console.error;
-      console.error = jest.fn(); // Mock console.error
-
+    it('should handle empty result sets', async () => {
       const testQuery = 'MATCH (n) RETURN n';
-      const invalidJsonData = '{invalid-json';
+      const emptyResults: Record<string, any>[] = [];
 
       const queryPromise = client.query(testQuery);
 
-      // Mock successful response with invalid JSON
+      // Mock successful response with empty array
       mockWorker.respondWith({
         id: mockWorker.lastRequestId!,
         type: 'query-success',
-        data: invalidJsonData
+        data: emptyResults
       } as KuzuQuerySuccess);
 
-      // Should return raw string on parsing error
-      await expect(queryPromise).resolves.toBe(invalidJsonData);
-      expect(console.error).toHaveBeenCalled();
-
-      // Restore console.error
-      console.error = originalConsoleError;
+      // Should return empty array
+      await expect(queryPromise).resolves.toEqual([]);
     });
   });
-
 
   describe('persist', () => {
     it('should persist database and return files', async () => {
@@ -314,7 +306,7 @@ describe('KuzuClient', () => {
       mockWorker.respondWith({
         id: mockWorker.lastRequestId!,
         type: 'query-success',
-        data: '{"test":1}'
+        data: [{ "test": 1 }]
       } as KuzuQuerySuccess);
 
       await expect(healthCheckPromise).resolves.toBe(true);
@@ -374,6 +366,75 @@ describe('KuzuClient', () => {
 
       // Restore console.error
       console.error = originalConsoleError;
+    });
+  });
+
+  describe('queries', () => {
+    it('should handle empty array input', async () => {
+      const result = await client.queries([]);
+      expect(result).toEqual([]);
+      expect(mockWorker.requests.length).toBe(0);
+    });
+
+    it('should use query method for single statement', async () => {
+      const testQuery = 'MATCH (n) RETURN n';
+      const queriesPromise = client.queries([testQuery]);
+
+      // Should use the single query method
+      expect(mockWorker.lastRequestType).toBe('query');
+      expect(mockWorker.requests[0].cypher).toBe(testQuery);
+
+      // Mock successful response
+      mockWorker.respondWith({
+        id: mockWorker.lastRequestId!,
+        type: 'query-success',
+        data: [{ test: 1 }]
+      } as KuzuQuerySuccess);
+
+      await expect(queriesPromise).resolves.toEqual([{ test: 1 }]);
+    });
+
+    it('should execute multiple queries in parallel', async () => {
+      const testQueries = [
+        'MATCH (n:Type1) RETURN n',
+        'MATCH (n:Type2) RETURN n'
+      ];
+
+      // Start the queries process
+      const queriesPromise = client.queries(testQueries);
+
+      // Should have sent two separate queries
+      expect(mockWorker.requests.length).toBe(2);
+      expect(mockWorker.requests[0].cypher).toBe(testQueries[0]);
+      expect(mockWorker.requests[1].cypher).toBe(testQueries[1]);
+
+      // Mock successful responses with correct data types
+      mockWorker.respondWith({
+        id: mockWorker.requests[0].id,
+        type: 'query-success',
+        data: [{ result: 'type1' }]
+      } as KuzuQuerySuccess);
+
+      mockWorker.respondWith({
+        id: mockWorker.requests[1].id,
+        type: 'query-success',
+        data: [{ result: 'type2' }]
+      } as KuzuQuerySuccess);
+
+      // Wait for the result and verify
+      const results = await queriesPromise;
+
+      // Check that results contain both query responses as arrays in an array
+      expect(results).toEqual([
+        [{ result: 'type1' }],
+        [{ result: 'type2' }]
+      ]);
+
+      // Verify that results match the expected format - an array of arrays
+      expect(Array.isArray(results)).toBe(true);
+      expect(results.length).toBe(2);
+      expect(Array.isArray(results[0])).toBe(true);
+      expect(Array.isArray(results[1])).toBe(true);
     });
   });
 });
