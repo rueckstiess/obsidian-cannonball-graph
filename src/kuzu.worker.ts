@@ -36,14 +36,26 @@ let isInitialized = false;
  * Converts a Uint8Array to a Base64 string.
  */
 function toBase64(u8: Uint8Array): string {
-  return btoa(String.fromCharCode(...u8));
+  let binary = '';
+  const len = u8.length;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(u8[i]);
+  }
+  return btoa(binary);
 }
-
 /**
  * Converts a Base64 string to a Uint8Array.
  */
-function fromBase64(b64: string): Uint8Array {
-  return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+function fromBase64(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return bytes;
 }
 
 /**

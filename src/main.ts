@@ -14,7 +14,12 @@ export default class KuzuPlugin extends Plugin {
 	 * Encodes ArrayBuffer to Base64 string for storage.
 	 */
 	private bufferToBase64(buffer: ArrayBuffer): string {
-		const binary = String.fromCharCode(...new Uint8Array(buffer));
+		const bytes = new Uint8Array(buffer);
+		let binary = '';
+		const chunkSize = 0x8000; // 32KB per chunk
+		for (let i = 0; i < bytes.length; i += chunkSize) {
+			binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+		}
 		return btoa(binary);
 	}
 
@@ -23,10 +28,14 @@ export default class KuzuPlugin extends Plugin {
 	 */
 	private base64ToBuffer(base64: string): ArrayBuffer {
 		const binary = atob(base64);
-		const bytes = new Uint8Array(binary.length);
-		for (let i = 0; i < binary.length; i++) {
-			bytes[i] = binary.charCodeAt(i);
+		const length = binary.length;
+		const bytes = new Uint8Array(length);
+
+		// Optimize by avoiding charCodeAt calls when possible
+		for (let i = 0; i < length; ++i) {
+			bytes[i] = binary.charCodeAt(i) & 0xff;
 		}
+
 		return bytes.buffer;
 	}
 
@@ -80,7 +89,7 @@ export default class KuzuPlugin extends Plugin {
 					await this.astGraphService.initSchema();
 
 					// Persist changes
-					// await this.persistDatabase();
+					await this.persistDatabase();
 
 					new Notice('Schema initialized successfully');
 				} catch (error) {
@@ -131,7 +140,7 @@ export default class KuzuPlugin extends Plugin {
 			name: "Parse current document to graph",
 			editorCallback: async (editor) => {
 				try {
-					// await this.ensureReady();
+					await this.ensureReady();
 
 					// Get current editor content and file path
 					const content = editor.getValue();
@@ -149,7 +158,7 @@ export default class KuzuPlugin extends Plugin {
 					const nodeCount = await this.astGraphService.processAst(ast, filePath);
 
 					// Persist changes
-					await this.persistDatabase();
+					// await this.persistDatabase();
 
 					new Notice(`Added ${nodeCount} AST nodes to the graph database`);
 				} catch (error) {
@@ -167,7 +176,7 @@ export default class KuzuPlugin extends Plugin {
 					// await this.ensureReady();
 
 					// // Query heading nodes as an example
-					const result = await this.kuzuClient.query("MATCH (n:Element) RETURN n.id AS id, n.type AS type, n.text AS text");
+					const result = await this.kuzuClient.query("MATCH (n:Element)-[r:LINK]->(c:Element) RETURN n.id AS id, r.type as relationship, c.id AS childId");
 					console.log('Database contents:', result);
 				} catch (error) {
 					console.error('Failed to query AST nodes:', error);

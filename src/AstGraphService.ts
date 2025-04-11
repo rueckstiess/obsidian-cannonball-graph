@@ -83,7 +83,7 @@ export class AstGraphService {
     await this.createNodesFromAst(ast, sourcePath);
 
     // Second pass: create relationships
-    // await this.createRelationshipsFromAst(ast);
+    await this.createRelationshipsFromAst(ast);
 
     return this.nodeIDs.size;
   }
@@ -101,42 +101,12 @@ export class AstGraphService {
 
       // Create a base node for every AST node
       cypher.push(`CREATE (:Element {id: '${nodeId}', type: '${node.type}'})`);
-
-      // Create specialized nodes based on type
-      // if (node.type === 'heading') {
-      //   const headingNode = node as Heading;
-      //   const headingText = this.getTextContent(headingNode);
-      //   cypher.push(`CREATE (:Heading {id: '${nodeId}', depth: ${headingNode.depth}, text: ${this.escapeCypherString(headingText)}})`);
-      // }
-      // else if (node.type === 'paragraph') {
-      //   const paragraphText = this.getTextContent(node);
-      //   cypher.push(`CREATE (:Paragraph {id: '${nodeId}', text: ${this.escapeCypherString(paragraphText)}})`);
-      // }
-      // else if (node.type === 'code') {
-      //   const codeNode = node as Code;
-      //   cypher.push(`
-      //               CREATE (:CodeBlock {
-      //                   id: '${nodeId}', 
-      //                   language: ${this.escapeCypherString(codeNode.lang || '')}, 
-      //                   content: ${this.escapeCypherString(codeNode.value)}
-      //               })
-      //           `);
-      // }
-      // else if (node.type === 'listItem' || node.type === 'customTask') {
-      //   const listItemNode = node as ListItem;
-      //   const checked = listItemNode.checked === true ? 'true' : (listItemNode.checked === false ? 'false' : 'null');
-      //   cypher.push(`CREATE (:ListItem {id: '${nodeId}', checked: ${checked}})`);
-      // }
-      // else if (node.type === 'inlineCode') {
-      //   const codeText = (node as Text).value || '';
-      //   cypher.push(`CREATE (:InlineCode {id: '${nodeId}', content: ${this.escapeCypherString(codeText)}})`);
-      // }
     });
 
     // Execute the transaction to create all nodes
     if (cypher.length > 0) {
       console.log('Creating nodes:', cypher);
-      const result = await this.kuzuClient.queries(cypher);
+      const result = await this.kuzuClient.transaction(cypher);
       console.log('Node creation result:', result);
     }
   }
@@ -162,13 +132,10 @@ export class AstGraphService {
       if (!processedPairs.has(relationshipKey)) {
         processedPairs.add(relationshipKey);
 
-        // We use position to maintain ordering
-        const position = cypher.length;
-
         cypher.push(`
                     MATCH (container:Element {id: '${containerId}'}), 
                           (contained:Element {id: '${containedId}'})
-                    CREATE (container)-[:CONTAINS {position: ${position}}]->(contained)
+                    CREATE (container)-[:LINK {type: "contains"}]->(contained)
                 `);
       }
     };
