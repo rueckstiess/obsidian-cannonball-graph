@@ -2,6 +2,10 @@ import { Plugin, Notice } from 'obsidian';
 import { KuzuClient } from './kuzu-client';
 import KuzuWorker from 'kuzu.worker';
 
+import { parseMarkdownToAST } from './markdown';
+import { inspect } from 'unist-util-inspect';
+import { visit } from 'unist-util-visit'
+import { Node, Parent, Root } from 'mdast';
 export default class KuzuPlugin extends Plugin {
 	private kuzuClient: KuzuClient;
 	private isReady = false;
@@ -148,6 +152,90 @@ export default class KuzuPlugin extends Plugin {
 				}
 			}
 		});
+
+		// Add a command to parse the current document to AST
+		this.addCommand({
+			id: "parse-markdown-ast",
+			name: "Parse current document to AST",
+			editorCallback: async (editor) => {
+				try {
+					// Get current editor content
+					const content = editor.getValue();
+					// const cursorPosition = editor.getCursor();
+
+					// Parse to AST
+					const ast = await parseMarkdownToAST(content);
+
+					// Log the AST to console
+					console.log('Markdown AST:');
+					console.log(inspect(ast));
+
+					// Visit nodes and add to graph
+					let counter = 0;
+					const nodeIDs = new Map<Node, string>()
+
+					// first pass, get all nodes
+					visit(ast, (node: Node, index: number, parent?: Parent) => {
+						const nodeId = `${node.type}-${counter++}`;
+						nodeIDs.set(node, nodeId);
+					});
+
+
+
+					// // Add contains edges between nodes
+					// const callback: ContainmentCallback = (parentNode: ExtendedNode, childNode: ExtendedNode) => {
+					// 	console.log(`Parent node: ${parentNode.type} ${parentNode.data}, Child node: ${childNode.type} ${childNode.data}`);
+					// 	const parentId = nodeIDs.get(parentNode);
+					// 	const childId = nodeIDs.get(childNode);
+					// 	if (!parentId || !childId) {
+					// 		console.warn(`Parent or child node not found in nodeIDs map: ${parentNode}, ${childNode}`);
+					// 		return;
+					// 	}
+					// 	this.graph.addEdge(parentId, childId, 'contains', {});
+					// };
+
+					// processHierarchicalRelationships(ast, callback);
+
+					// console.log('Graph:', this.graph.toJSON());
+
+					// // Link Tasks with Subtasks via depends_on
+					// this.queryEngine.executeQuery(this.graph, `
+					// 	MATCH (t:customTask)-[:renders]->(l:list)->[:renders]->(st:customTask)
+					// 	CREATE (t)-[r:depends_on]->(st)
+					// `, {})
+
+					// // Find codeblocks with language "cypher"
+					// visit(ast, 'code', (node: Code) => {
+					// 	if (node.lang === 'cypher') {
+					// 		console.log(`Found cypher code block:\n${node.value}\n`);
+
+					// 		// Execute the code block
+					// 		const query = node.value;
+					// 		const result = this.queryEngine.executeQuery(this.graph, query, {})
+					// 		console.log(`Query result (${result.stats.executionTimeMs}ms):\n`, this.queryFormatter.toTextTable(result));
+					// 	}
+					// });
+
+					// const nodeAtCursor = findNodeAtCursor(ast, cursorPosition);
+					// console.log("Node at cursor:", nodeAtCursor);
+
+					// const context = buildContextFromNode(ast, nodeAtCursor, content)
+					// console.log("Context:\n", context);
+
+					// Stringify the AST back to markdown
+					// const newContent = await astToMarkdown(ast);
+
+					// Update the editor with the stringified content
+					// editor.setValue(newContent);
+					// editor.setCursor(cursorPosition);
+				} catch (error) {
+					console.error("Error processing markdown:", error);
+				}
+			}
+		});
+
+
+
 	}
 
 	/**

@@ -8,7 +8,7 @@ export default {
       useESM: true,
     }],
   },
-  testMatch: ['**/__tests__/**/*.ts?(x)', '**/?(*.)+(spec|test).ts?(x)'],
+  testMatch: ['__tests__/**/*.ts?(x)', '**/?(*.)+(spec|test).ts?(x)'],
   collectCoverageFrom: [
     'src/**/*.{ts,tsx}',
     '!**/node_modules/**',
