@@ -130,37 +130,59 @@ async function handleInit(request: KuzuInitRequest): Promise<KuzuResponse> {
   }
 }
 
+
+function safeJson(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+
+  if (typeof obj === "bigint") {
+    // Safest default: convert to string
+    return obj.toString();
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map(safeJson);
+  }
+
+  if (typeof obj === "object") {
+    const safe: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      safe[key] = safeJson(value);
+    }
+    return safe;
+  }
+
+  return obj;
+}
+
+
 /**
  * Handles query requests.
  */
 function handleQuery(request: KuzuQueryRequest): KuzuResponse {
   try {
-    // Check if initialized
     if (!isInitialized) {
-      throw new Error('Database not initialized');
+      throw new Error("Database not initialized");
     }
 
-    // Execute query (synchronous in WASM build)
     const result = conn.query(request.cypher);
 
-    // Get the structured results using the native getAllObjects method
-    const structuredData = result.getAllObjects();
+    const structuredData = result.getAllObjects()
+    const safeData = safeJson(structuredData);
 
     return {
       id: request.id,
-      type: 'query-success',
-      data: JSON.stringify(structuredData)
+      type: "query-success",
+      data: JSON.stringify(safeData)
     };
   } catch (error) {
     return {
       id: request.id,
-      type: 'error',
-      error: error.message || 'Unknown query error',
-      requestType: 'query'
+      type: "error",
+      error: error.message || "Unknown query error",
+      requestType: "query"
     };
   }
 }
-
 /**
  * Handles insert requests.
  */

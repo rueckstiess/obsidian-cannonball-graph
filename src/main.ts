@@ -1,13 +1,13 @@
 import { Plugin, Notice } from 'obsidian';
 import { KuzuClient } from './kuzu-client';
 import KuzuWorker from 'kuzu.worker';
-
 import { parseMarkdownToAST } from './markdown';
 import { inspect } from 'unist-util-inspect';
-import { visit } from 'unist-util-visit'
-import { Node, Parent, Root } from 'mdast';
+import { AstGraphService } from './AstGraphService';
+
 export default class KuzuPlugin extends Plugin {
 	private kuzuClient: KuzuClient;
+	private astGraphService: AstGraphService;
 	private isReady = false;
 
 	/**
@@ -31,11 +31,12 @@ export default class KuzuPlugin extends Plugin {
 	}
 
 	async onload() {
-		console.log('Loading KuzuDB plugin');
-
 		try {
 			// Create the KuzuDB client
 			this.kuzuClient = new KuzuClient(KuzuWorker);
+
+			// Initialize AST Graph Service
+			this.astGraphService = new AstGraphService(this.kuzuClient);
 
 			// Load saved database data (if any)
 			const saved = await this.loadData();
@@ -49,6 +50,7 @@ export default class KuzuPlugin extends Plugin {
 			// Initialize the database
 			await this.kuzuClient.init(dbData);
 			this.isReady = true;
+
 			console.log('KuzuDB initialized successfully');
 
 			// Add plugin commands
@@ -75,17 +77,10 @@ export default class KuzuPlugin extends Plugin {
 			callback: async () => {
 				try {
 					await this.ensureReady();
-					await this.kuzuClient.transaction([
-						// Create node tables
-						'CREATE NODE TABLE IF NOT EXISTS Person(name STRING, age INT64, PRIMARY KEY(name))',
-						'CREATE NODE TABLE IF NOT EXISTS Note(path STRING, title STRING, created TIMESTAMP, PRIMARY KEY(path))',
-
-						// Create edge tables
-						'CREATE REL TABLE IF NOT EXISTS REFERENCES(FROM Note TO Note, context STRING)'
-					]);
+					await this.astGraphService.initSchema();
 
 					// Persist changes
-					await this.persistDatabase();
+					// await this.persistDatabase();
 
 					new Notice('Schema initialized successfully');
 				} catch (error) {
@@ -95,147 +90,110 @@ export default class KuzuPlugin extends Plugin {
 			}
 		});
 
-		// Command to insert test data
+		// // Command to insert test data
+		// this.addCommand({
+		// 	id: 'kuzu-insert-test-data',
+		// 	name: 'Insert Test Data',
+		// 	callback: async () => {
+		// 		try {
+		// 			await this.ensureReady();
+		// 			await this.kuzuClient.transaction([
+		// 				// Insert people
+		// 				"CREATE (:Person {name: 'Alice', age: 30})",
+		// 				"CREATE (:Person {name: 'Bob', age: 42})",
+		// 				"CREATE (:Person {name: 'Charlie', age: 25})",
+
+		// 				// Insert notes
+		// 				"CREATE (:Note {path: '/notes/test1.md', title: 'Test Note 1', created: datetime()})",
+		// 				"CREATE (:Note {path: '/notes/test2.md', title: 'Test Note 2', created: datetime()})"
+		// 			]);
+
+		// 			// Create relationships
+		// 			await this.kuzuClient.transaction([
+		// 				"MATCH (a:Note {path: '/notes/test1.md'}), (b:Note {path: '/notes/test2.md'}) " +
+		// 				"CREATE (a)-[:REFERENCES {context: 'Referenced in section 2'}]->(b)"
+		// 			]);
+
+		// 			// Persist changes
+		// 			await this.persistDatabase();
+
+		// 			new Notice('Test data inserted successfully');
+		// 		} catch (error) {
+		// 			console.error('Failed to insert test data:', error);
+		// 			new Notice(`Test data insertion failed: ${error.message}`);
+		// 		}
+		// 	}
+		// });
+
+		// Add a command to parse the current document to AST and store in graph DB
 		this.addCommand({
-			id: 'kuzu-insert-test-data',
-			name: 'Insert Test Data',
-			callback: async () => {
+			id: "parse-markdown-ast",
+			name: "Parse current document to graph",
+			editorCallback: async (editor) => {
 				try {
 					await this.ensureReady();
-					await this.kuzuClient.transaction([
-						// Insert people
-						"CREATE (:Person {name: 'Alice', age: 30})",
-						"CREATE (:Person {name: 'Bob', age: 42})",
-						"CREATE (:Person {name: 'Charlie', age: 25})",
 
-						// Insert notes
-						"CREATE (:Note {path: '/notes/test1.md', title: 'Test Note 1', created: datetime()})",
-						"CREATE (:Note {path: '/notes/test2.md', title: 'Test Note 2', created: datetime()})"
-					]);
+					// Get current editor content and file path
+					const content = editor.getValue();
+					const file = this.app.workspace.getActiveFile();
+					const filePath = file ? file.path : undefined;
 
-					// Create relationships
-					await this.kuzuClient.transaction([
-						"MATCH (a:Note {path: '/notes/test1.md'}), (b:Note {path: '/notes/test2.md'}) " +
-						"CREATE (a)-[:REFERENCES {context: 'Referenced in section 2'}]->(b)"
-					]);
+					// Parse to AST
+					const ast = await parseMarkdownToAST(content);
+
+					// Log the AST to console for debugging
+					console.log('Markdown AST:');
+					console.log(inspect(ast));
+
+					// Process the AST and add to graph database
+					const nodeCount = await this.astGraphService.processAst(ast, filePath);
 
 					// Persist changes
 					await this.persistDatabase();
 
-					new Notice('Test data inserted successfully');
+					new Notice(`Added ${nodeCount} AST nodes to the graph database`);
 				} catch (error) {
-					console.error('Failed to insert test data:', error);
-					new Notice(`Test data insertion failed: ${error.message}`);
+					console.error("Error processing markdown:", error);
+					new Notice(`Error adding to graph: ${error.message}`);
 				}
 			}
 		});
 
-		// Command to query people
 		this.addCommand({
-			id: 'kuzu-query-people',
-			name: 'Query People',
+			id: "show-all-nodes-and-edges",
+			name: "Show Database Contents",
 			callback: async () => {
 				try {
 					await this.ensureReady();
-					const result = await this.kuzuClient.query('MATCH (p:Person) RETURN p.name, p.age ORDER BY p.name');
-					console.log('Main query result:', result);
+					await this.kuzuClient.isHealthy();
 
-					// // Format results for display
-					// const formattedResult = result.map((row: any) =>
-					// 	`${row['p.name']}: ${row['p.age']} years old`
-					// ).join('\n');
-
-					// new Notice(`People in database:\n${formattedResult}`, 5000);
+					// // Query heading nodes as an example
+					const result = await this.kuzuClient.query("RETURN 1+1");
+					console.log('Database contents:', result);
 				} catch (error) {
-					console.error('Failed to query people:', error);
+					console.error('Failed to query AST nodes:', error);
 					new Notice(`Query failed: ${error.message}`);
 				}
 			}
 		});
 
-		// Add a command to parse the current document to AST
-		this.addCommand({
-			id: "parse-markdown-ast",
-			name: "Parse current document to AST",
-			editorCallback: async (editor) => {
-				try {
-					// Get current editor content
-					const content = editor.getValue();
-					// const cursorPosition = editor.getCursor();
+		// Add a command to query AST nodes from the graph
+		// this.addCommand({
+		// 	id: "query-ast-nodes",
+		// 	name: "Query AST nodes from the graph",
+		// 	callback: async () => {
+		// 		try {
+		// 			await this.ensureReady();
 
-					// Parse to AST
-					const ast = await parseMarkdownToAST(content);
-
-					// Log the AST to console
-					console.log('Markdown AST:');
-					console.log(inspect(ast));
-
-					// Visit nodes and add to graph
-					let counter = 0;
-					const nodeIDs = new Map<Node, string>()
-
-					// first pass, get all nodes
-					visit(ast, (node: Node, index: number, parent?: Parent) => {
-						const nodeId = `${node.type}-${counter++}`;
-						nodeIDs.set(node, nodeId);
-					});
-
-
-
-					// // Add contains edges between nodes
-					// const callback: ContainmentCallback = (parentNode: ExtendedNode, childNode: ExtendedNode) => {
-					// 	console.log(`Parent node: ${parentNode.type} ${parentNode.data}, Child node: ${childNode.type} ${childNode.data}`);
-					// 	const parentId = nodeIDs.get(parentNode);
-					// 	const childId = nodeIDs.get(childNode);
-					// 	if (!parentId || !childId) {
-					// 		console.warn(`Parent or child node not found in nodeIDs map: ${parentNode}, ${childNode}`);
-					// 		return;
-					// 	}
-					// 	this.graph.addEdge(parentId, childId, 'contains', {});
-					// };
-
-					// processHierarchicalRelationships(ast, callback);
-
-					// console.log('Graph:', this.graph.toJSON());
-
-					// // Link Tasks with Subtasks via depends_on
-					// this.queryEngine.executeQuery(this.graph, `
-					// 	MATCH (t:customTask)-[:renders]->(l:list)->[:renders]->(st:customTask)
-					// 	CREATE (t)-[r:depends_on]->(st)
-					// `, {})
-
-					// // Find codeblocks with language "cypher"
-					// visit(ast, 'code', (node: Code) => {
-					// 	if (node.lang === 'cypher') {
-					// 		console.log(`Found cypher code block:\n${node.value}\n`);
-
-					// 		// Execute the code block
-					// 		const query = node.value;
-					// 		const result = this.queryEngine.executeQuery(this.graph, query, {})
-					// 		console.log(`Query result (${result.stats.executionTimeMs}ms):\n`, this.queryFormatter.toTextTable(result));
-					// 	}
-					// });
-
-					// const nodeAtCursor = findNodeAtCursor(ast, cursorPosition);
-					// console.log("Node at cursor:", nodeAtCursor);
-
-					// const context = buildContextFromNode(ast, nodeAtCursor, content)
-					// console.log("Context:\n", context);
-
-					// Stringify the AST back to markdown
-					// const newContent = await astToMarkdown(ast);
-
-					// Update the editor with the stringified content
-					// editor.setValue(newContent);
-					// editor.setCursor(cursorPosition);
-				} catch (error) {
-					console.error("Error processing markdown:", error);
-				}
-			}
-		});
-
-
-
+		// 			// Query heading nodes as an example
+		// 			const headings = await this.astGraphService.queryElements('Heading');
+		// 			console.log('Headings in the graph:', headings);
+		// 		} catch (error) {
+		// 			console.error('Failed to query AST nodes:', error);
+		// 			new Notice(`Query failed: ${error.message}`);
+		// 		}
+		// 	}
+		// });
 	}
 
 	/**
