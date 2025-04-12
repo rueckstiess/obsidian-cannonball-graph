@@ -122,7 +122,7 @@ export class KuzuClient {
 
     // Parse the JSON result
     try {
-      return response.data as T;
+      return response.data as unknown as T;
     } catch (error) {
       // If parsing fails, return the raw string data
       console.error("Error parsing query result:", error);

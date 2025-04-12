@@ -1,13 +1,11 @@
 import { Plugin, Notice } from 'obsidian';
 import { KuzuClient } from './kuzu-client';
 import KuzuWorker from 'kuzu.worker';
-import { parseMarkdownToAST } from './markdown';
-import { inspect } from 'unist-util-inspect';
-import { AstGraphService } from './AstGraphService';
+import { ObsidianCacheGraphService } from './ObsidianCacheGraphService';
 
 export default class KuzuPlugin extends Plugin {
 	private kuzuClient: KuzuClient;
-	private astGraphService: AstGraphService;
+	private graphService: ObsidianCacheGraphService;
 	private isReady = false;
 
 	/**
@@ -44,16 +42,13 @@ export default class KuzuPlugin extends Plugin {
 			// Create the KuzuDB client
 			this.kuzuClient = new KuzuClient(KuzuWorker);
 
-			// Initialize AST Graph Service
-			this.astGraphService = new AstGraphService(this.kuzuClient);
-
 			// Load saved database data (if any)
 			const saved = await this.loadData();
 			let dbData: ArrayBuffer | undefined;
 
-			if (saved) {
+			if (saved && saved.dbData) {
 				console.log('Found saved database data');
-				dbData = this.base64ToBuffer(saved);
+				dbData = this.base64ToBuffer(saved.dbData);
 			}
 
 			// Initialize the database
@@ -68,7 +63,10 @@ export default class KuzuPlugin extends Plugin {
 			// Add status bar item to show database status
 			this.addStatusBarItem().setText('KuzuDB: Ready');
 
-			new Notice('KuzuDB plugin loaded successfully');
+			// Initialize Cache Graph Service
+			this.graphService = new ObsidianCacheGraphService(this, this.kuzuClient);
+
+			new Notice('cannonball-graph plugin loaded successfully');
 		} catch (error) {
 			console.error('Failed to initialize KuzuDB:', error);
 			new Notice(`KuzuDB initialization failed: ${error.message}`);
@@ -86,11 +84,7 @@ export default class KuzuPlugin extends Plugin {
 			callback: async () => {
 				try {
 					await this.ensureReady();
-					await this.astGraphService.initSchema();
-
-					// Persist changes
-					await this.persistDatabase();
-
+					// The schema is now automatically initialized in the service
 					new Notice('Schema initialized successfully');
 				} catch (error) {
 					console.error('Failed to initialize schema:', error);
@@ -99,114 +93,66 @@ export default class KuzuPlugin extends Plugin {
 			}
 		});
 
-		// // Command to insert test data
-		// this.addCommand({
-		// 	id: 'kuzu-insert-test-data',
-		// 	name: 'Insert Test Data',
-		// 	callback: async () => {
-		// 		try {
-		// 			await this.ensureReady();
-		// 			await this.kuzuClient.transaction([
-		// 				// Insert people
-		// 				"CREATE (:Person {name: 'Alice', age: 30})",
-		// 				"CREATE (:Person {name: 'Bob', age: 42})",
-		// 				"CREATE (:Person {name: 'Charlie', age: 25})",
-
-		// 				// Insert notes
-		// 				"CREATE (:Note {path: '/notes/test1.md', title: 'Test Note 1', created: datetime()})",
-		// 				"CREATE (:Note {path: '/notes/test2.md', title: 'Test Note 2', created: datetime()})"
-		// 			]);
-
-		// 			// Create relationships
-		// 			await this.kuzuClient.transaction([
-		// 				"MATCH (a:Note {path: '/notes/test1.md'}), (b:Note {path: '/notes/test2.md'}) " +
-		// 				"CREATE (a)-[:REFERENCES {context: 'Referenced in section 2'}]->(b)"
-		// 			]);
-
-		// 			// Persist changes
-		// 			await this.persistDatabase();
-
-		// 			new Notice('Test data inserted successfully');
-		// 		} catch (error) {
-		// 			console.error('Failed to insert test data:', error);
-		// 			new Notice(`Test data insertion failed: ${error.message}`);
-		// 		}
-		// 	}
-		// });
-
-		// Add a command to parse the current document to AST and store in graph DB
+		// Add command to reindex the current file
 		this.addCommand({
-			id: "parse-markdown-ast",
-			name: "Parse current document to graph",
-			editorCallback: async (editor) => {
+			id: 'kuzu-reindex-file',
+			name: 'Reindex Current File',
+			callback: async () => {
 				try {
 					await this.ensureReady();
-
-					// Get current editor content and file path
-					const content = editor.getValue();
-					const file = this.app.workspace.getActiveFile();
-					const filePath = file ? file.path : undefined;
-
-					// Parse to AST
-					const ast = await parseMarkdownToAST(content);
-
-					// Log the AST to console for debugging
-					console.log('Markdown AST:');
-					console.log(inspect(ast));
-
-					// Process the AST and add to graph database
-					const nodeCount = await this.astGraphService.processAst(ast, filePath);
-
-					// Persist changes
-					// await this.persistDatabase();
-
-					new Notice(`Added ${nodeCount} AST nodes to the graph database`);
+					const activeFile = this.app.workspace.getActiveFile();
+					if (activeFile) {
+						await this.graphService.processFile(activeFile);
+						new Notice(`Reindexed file: ${activeFile.path}`);
+					} else {
+						new Notice('No active file to reindex');
+					}
 				} catch (error) {
-					console.error("Error processing markdown:", error);
-					new Notice(`Error adding to graph: ${error.message}`);
+					console.error('Failed to reindex file:', error);
+					new Notice(`Reindexing failed: ${error.message}`);
+				}
+			}
+		})
+
+		// Add a command to manually reindex the entire vault
+		this.addCommand({
+			id: "reindex-vault",
+			name: "Reindex all files in vault",
+			callback: async () => {
+				try {
+					await this.ensureReady();
+					await this.graphService.indexVault();
+					new Notice('Vault reindexing complete');
+				} catch (error) {
+					console.error('Failed to reindex vault:', error);
+					new Notice(`Reindexing failed: ${error.message}`);
 				}
 			}
 		});
 
+		// Add a command to show database contents
 		this.addCommand({
 			id: "show-database-contents",
 			name: "Show Database Contents",
 			callback: async () => {
 				try {
-					// await this.ensureReady();
-
-					// // Query heading nodes as an example
-					const result = await this.kuzuClient.query("MATCH (n:Element)-[r:LINK]->(c:Element) RETURN n.id AS id, r.type as relationship, c.id AS childId");
+					await this.ensureReady();
+					const result = await this.kuzuClient.query(
+						"MATCH (b:Block) RETURN b.type as type, b.text as text, b.line as line LIMIT 25"
+					);
 					console.log('Database contents:', result);
+					new Notice(`Found ${result.length} blocks in database`);
 				} catch (error) {
-					console.error('Failed to query AST nodes:', error);
+					console.error('Failed to query blocks:', error);
 					new Notice(`Query failed: ${error.message}`);
 				}
 			}
 		});
-
-		// Add a command to query AST nodes from the graph
-		// this.addCommand({
-		// 	id: "query-ast-nodes",
-		// 	name: "Query AST nodes from the graph",
-		// 	callback: async () => {
-		// 		try {
-		// 			await this.ensureReady();
-
-		// 			// Query heading nodes as an example
-		// 			const headings = await this.astGraphService.queryElements('Heading');
-		// 			console.log('Headings in the graph:', headings);
-		// 		} catch (error) {
-		// 			console.error('Failed to query AST nodes:', error);
-		// 			new Notice(`Query failed: ${error.message}`);
-		// 		}
-		// 	}
-		// });
 	}
 
 	/**
-	 * Persists the database to storage.
-	 */
+		 * Persists the database to storage.
+		 */
 	private async persistDatabase(): Promise<void> {
 		try {
 			const files = await this.kuzuClient.persist();
