@@ -88,6 +88,19 @@ export class AstGraphService {
     return this.nodeIDs.size;
   }
 
+  private createNodeProperties(obj: Record<string, any>): string {
+    const props = Object.entries(obj)
+      .map(([key, value]) => {
+        if (typeof value === 'string') {
+          return `${key}: '${value}'`;
+        }
+        return `${key}: ${value}`;
+      })
+      .join(', ');
+
+    return `{ ${props} }`;
+  }
+
   /**
    * Creates graph nodes for each AST node.
    */
@@ -99,8 +112,20 @@ export class AstGraphService {
       const nodeId = `${node.type}-${this.getNodeId()}`;
       this.nodeIDs.set(node, nodeId);
 
+      // create properties for the node
+      const properties: Record<string, any> = {
+        id: nodeId,
+        type: node.type,
+        // text: this.getTextContent(node),
+        // state: node.data?.state || null,
+        // tags: node.data?.tags || [],
+        // ref: node.data?.ref || null,
+        sourceFile: sourcePath || null,
+        line: node.position?.start.line || null
+      };
+
       // Create a base node for every AST node
-      cypher.push(`CREATE (:Element {id: '${nodeId}', type: '${node.type}'})`);
+      cypher.push(`CREATE (:Element ${this.createNodeProperties(properties)})`);
     });
 
     // Execute the transaction to create all nodes
@@ -118,6 +143,29 @@ export class AstGraphService {
     const cypher: string[] = [];
     const processedPairs = new Set<string>();
 
+    // Create "renders" relationships for all nodes based on AST
+    visit(ast, (node: Node, index: number, parent?: Parent) => {
+
+      const nodeId = this.nodeIDs.get(node);
+      const parentId = parent ? this.nodeIDs.get(parent) : null;
+
+      if (!nodeId) {
+        return;
+      }
+
+      if (index === undefined) {
+        index = 0;
+      }
+
+      cypher.push(`
+        MATCH (parent:Element {id: '${parentId}'}), 
+              (child:Element {id: '${nodeId}'})
+        CREATE (parent)-[:LINK {type: "renders", rank: ${index}}]->(child)
+       `);
+    });
+
+
+
     // Use the containment relationships to build the graph structure
     const callback: ContainmentCallback = (container: ExtendedNode, contained: ExtendedNode) => {
       const containerId = this.nodeIDs.get(container);
@@ -133,10 +181,10 @@ export class AstGraphService {
         processedPairs.add(relationshipKey);
 
         cypher.push(`
-                    MATCH (container:Element {id: '${containerId}'}), 
-                          (contained:Element {id: '${containedId}'})
-                    CREATE (container)-[:LINK {type: "contains"}]->(contained)
-                `);
+          MATCH (container:Element {id: '${containerId}'}), 
+                (contained:Element {id: '${containedId}'})
+          CREATE (container)-[:LINK {type: "contains"}]->(contained)
+        `);
       }
     };
 
