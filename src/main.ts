@@ -122,6 +122,7 @@ export default class KuzuPlugin extends Plugin {
 				try {
 					await this.ensureReady();
 					await this.graphService.indexVault();
+					await this.persistDatabase();
 					new Notice('Vault reindexing complete');
 				} catch (error) {
 					console.error('Failed to reindex vault:', error);
@@ -138,7 +139,7 @@ export default class KuzuPlugin extends Plugin {
 				try {
 					await this.ensureReady();
 					const result = await this.kuzuClient.query(
-						"MATCH (b:Block) RETURN b.type as type, b.text as text, b.line as line LIMIT 25"
+						"MATCH (b:Block) RETURN b LIMIT 25"
 					);
 					console.log('Database contents:', result);
 					new Notice(`Found ${result.length} blocks in database`);

@@ -1,19 +1,21 @@
 import { KuzuClient } from './kuzu-client';
 import { Notice, App, Plugin, TFile, Pos, ListItemCache, BlockCache } from 'obsidian';
 
+interface Block {
+
+  display: string;
+  node: {
+    type: string,
+    position: Pos,
+    children: Array<any>,
+  }
+}
+
 interface FileEntry {
   file: TFile;
   content: string;
   mtime: number;
-  blocks: Array<{
-    display: string;
-    node: {
-      id?: string,
-      type: string,
-      position: Pos,
-      children: Array<any>,
-    }
-  }>;
+  blocks: Array<Block>;
 }
 
 
@@ -111,7 +113,7 @@ export class ObsidianCacheGraphService {
  * @param {string} filePath - The path of the file to get blocks from
  * @returns {Promise<Array>} - Array of blocks with added context
  */
-  private async getBlocksForFile(filePath: string): Promise<any[]> {
+  private async getBlocksForFile(filePath: string): Promise<Block[]> {
     // Get the file object from the path
     const file: TFile = this.app.vault.getAbstractFileByPath(filePath) as TFile;
 
@@ -168,13 +170,12 @@ export class ObsidianCacheGraphService {
 
       // Node table for blocks
       `CREATE NODE TABLE Block (
-        id STRING,           // unique identifier for the block
-        blockId STRING,      // Obsidian's block ID if available
-        type STRING,         // e.g. "heading", "paragraph", "listItem", etc.
-        text STRING,         // raw content
-        level INT32,         // for headings, lists, etc.
+        id SERIAL,           // unique identifier for the block
         path STRING,         // file path
-        line INT32,          // line number in file
+        type STRING,         // e.g. "heading", "paragraph", "listItem", etc.
+        text STRING,         // block content
+        start_line INT32,    // start line number in file
+        end_line INT32,      // end line number in file
         PRIMARY KEY(id)
       )`,
 
@@ -243,20 +244,32 @@ export class ObsidianCacheGraphService {
       }
 
       const blocks = await this.getBlocksForFile(file.path);
+      console.log(metadata);
       console.log(blocks);
 
-      // // Clear existing nodes for this file
-      // await this.kuzuClient.query(`
-      //   MATCH (b:Block {path: '${this.escapeCypher(file.path)}'})
-      //   DETACH DELETE b
-      // `);
+      // Clear existing nodes for this file
+      await this.kuzuClient.query(`
+        MATCH (b:Block {path: '${this.escapeCypher(file.path)}'})
+        DETACH DELETE b
+      `);
 
-      // // Reset the file's node map
-      // const fileNodeMap = new Map<string, string>();
-      // this.fileToNodeMap.set(file.path, fileNodeMap);
+      // Reset the file's node map
+      const fileNodeMap = new Map<string, string>();
+      this.fileToNodeMap.set(file.path, fileNodeMap);
 
-      // // Process sections, headings, and blocks
-      // const createNodeStatements: string[] = [];
+      // Process sections, headings, and blocks
+      const createNodeStatements: string[] = [];
+
+      for (const block of blocks) {
+        createNodeStatements.push(`
+          CREATE (:Block {
+            path: '${this.escapeCypher(file.path)}',
+            type: '${block.node.type}',
+            start_line: ${block.node.position.start.line},
+            end_line: ${block.node.position.end.line}
+          })
+        `);
+      }
 
       // Process headings from metadata
       // if (metadata.headings) {
@@ -305,37 +318,11 @@ export class ObsidianCacheGraphService {
       //   }
       // }
 
-      // Process blocks with IDs from metadata
-      // if (blocks) {
-      //   for (const [blockId, blockInfo] of Object.entries(blocks)) {
-      //     const nodeId = `block-${this.getNodeId()}`;
-      //     const positionKey = this.getPositionKey(blockInfo.node.position);
-      //     fileNodeMap.set(positionKey, nodeId);
 
-      //     // Get block content from the blockCache
-      //     const content = this.getBlockContentByPosition(blocks, blockInfo.node.position);
-
-      //     // Try to determine block type from the block cache
-      //     const blockCacheEntry = this.findBlockByPosition(blocks, blockInfo.node.position);
-      //     const blockType = blockCacheEntry?.type || 'block';
-
-      //     createNodeStatements.push(`
-      //       CREATE (:Block {
-      //         id: '${nodeId}',
-      //         blockId: '${this.escapeCypher(blockId)}',
-      //         type: '${blockType}',
-      //         text: '${this.escapeCypher(content)}',
-      //         path: '${this.escapeCypher(file.path)}',
-      //         line: ${(blockInfo as BlockCache).position.start.line}
-      //       })
-      //     `);
-      //   }
-      // }
-
-      // // Execute create node statements
-      // if (createNodeStatements.length > 0) {
-      //   await this.kuzuClient.transaction(createNodeStatements);
-      // }
+      // Execute create node statements
+      if (createNodeStatements.length > 0) {
+        await this.kuzuClient.transaction(createNodeStatements);
+      }
 
       // Now process relationships
       // await this.createRelationships(file, metadata, blockCache, fileNodeMap);
