@@ -69,9 +69,7 @@ export class ObsidianCacheGraphService {
   private kuzuClient: KuzuClient;
   private plugin: Plugin;
   private app: App;
-  private nodeIdCounter = 0;
   private isReady = false;
-  private fileToNodeMap: Map<string, Map<string, string>> = new Map();
 
   /**
    * Creates a new ObsidianCacheGraphService
@@ -165,25 +163,49 @@ export class ObsidianCacheGraphService {
   public async initSchema(): Promise<void> {
     await this.kuzuClient.transaction([
       // Drop existing tables if they exist
-      'DROP TABLE IF EXISTS LINK',
+      'DROP TABLE IF EXISTS Link',
+      'DROP TABLE IF EXISTS HasTag',
+      'DROP TABLE IF EXISTS Tag',
       'DROP TABLE IF EXISTS Block',
 
-      // Node table for blocks
-      `CREATE NODE TABLE Block (
-        id SERIAL,           // unique identifier for the block
-        path STRING,         // file path
-        type STRING,         // e.g. "heading", "paragraph", "listItem", etc.
-        text STRING,         // block content
-        start_line INT32,    // start line number in file
-        end_line INT32,      // end line number in file
-        PRIMARY KEY(id)
+      // Block Table - Represents all node types in the graph
+      `CREATE NODE TABLE Block(
+        id STRING PRIMARY KEY,   // Unique identifier (file path + position or block ID)
+        type STRING,             // "note", "heading", "paragraph", "task", "decision", "folder", "vault", etc.
+        status STRING,           // For stateful nodes: "open", "completed", "blocked", etc.
+        content STRING,          // Text content of the node
+        path STRING,             // File path (empty for vault node)
+        start_line INT32,        // Start line in the file (for block-level nodes)
+        start_col INT32,         // Start column in the file
+        end_line INT32,          // End line in the file
+        end_col INT32,           // End column in the file
+        block_id STRING,         // Optional block ID (^block-id)
+        tags STRING[],           // Array of tags associated with this node
+        depth INT32,             // For hierarchical nodes like headings (h1=1, h2=2) or list nesting
+        created_at TIMESTAMP,    // When this node was first created
+        updated_at TIMESTAMP     // When this node was last updated
       )`,
 
-      // Edge table for relationships
-      `CREATE REL TABLE LINK (
+      // Relationship Table - Represents all relationships between blocks
+      `CREATE REL TABLE Link(
         FROM Block TO Block,
-        type STRING,         // e.g. "CONTAINS", "REFERENCES", etc.
-        rank INT32           // for ordering
+        type STRING,             // "contains", "belongs_to", "depends_on", "links_to", etc.
+        explicit BOOLEAN,        // Whether this relationship was explicitly defined
+        rank INT32,              // For ordering relationships
+        created_at TIMESTAMP,    // When this relationship was first created
+        updated_at TIMESTAMP     // When this relationship was last updated
+      )`,
+      // Tag Table for more efficient tag queries
+      `CREATE NODE TABLE Tag(
+        id STRING PRIMARY KEY,   // Tag name with # prefix
+        name STRING,             // Tag name without # prefix
+        category STRING          // For hierarchical tags like #project/personal
+      )`,
+
+      // Tag relationships
+      `CREATE REL TABLE HasTag(
+        FROM Block TO Tag,
+        created_at TIMESTAMP
       )`
     ]);
 
@@ -229,200 +251,385 @@ export class ObsidianCacheGraphService {
    * @param file The file to process
    * @returns Promise that resolves when processing is complete
    */
+  // public async processFile(file: TFile): Promise<void> {
+  //   if (!this.isReady) {
+  //     await this.initSchema();
+  //   }
+
+  //   try {
+  //     // get metadata from file cache
+  //     const metadata = this.app.metadataCache.getFileCache(file);
+
+  //     if (!metadata) {
+  //       console.warn(`No metadata found for file: ${file.path}`);
+  //       return;
+  //     }
+
+  //     const blocks = await this.getBlocksForFile(file.path);
+  //     console.log(metadata);
+  //     console.log(blocks);
+
+  //     // Clear existing nodes for this file
+  //     await this.kuzuClient.query(`
+  //       MATCH (b:Block {path: '${this.escapeCypher(file.path)}'})
+  //       DETACH DELETE b
+  //     `);
+
+
+  //   } catch (error) {
+  //     console.error(`Error processing file ${file.path}:`, error);
+  //   }
+  // }
+
+
+  // Process file structure
   public async processFile(file: TFile): Promise<void> {
-    if (!this.isReady) {
-      await this.initSchema();
+    // Get caches
+    const metadata = this.app.metadataCache.getFileCache(file);
+    const blocks = await this.getBlocksForFile(file.path);
+
+    // Delete existing nodes for this file
+    this.deleteExistingNodes(file.path);
+
+    // Create or ensure vault and folder nodes exist
+    this.ensureVaultAndFolderNodes(file.path);
+
+    // Create file node
+    this.createFileNode(file);
+
+    // Process sections and create nodes
+    const nodeStatements = [];
+    const relationshipStatements = [];
+
+    if (!metadata) {
+      console.warn(`No metadata found for file: ${file.path}`);
+      return;
     }
 
-    try {
-      // get metadata from file cache
-      const metadata = this.app.metadataCache.getFileCache(file);
+    // Process headings
+    if (metadata.headings) {
+      for (const heading of metadata.headings) {
+        const headingId = this.generateNodeId(file.path, heading.position);
+        nodeStatements.push(this.createHeadingNodeStatement(headingId, heading, file.path));
 
-      if (!metadata) {
-        console.warn(`No metadata found for file: ${file.path}`);
-        return;
+        // Add relationship to file
+        relationshipStatements.push(this.createRelationshipStatement(
+          this.generateFileId(file.path),
+          headingId,
+          'contains'
+        ));
       }
-
-      const blocks = await this.getBlocksForFile(file.path);
-      console.log(metadata);
-      console.log(blocks);
-
-      // Clear existing nodes for this file
-      await this.kuzuClient.query(`
-        MATCH (b:Block {path: '${this.escapeCypher(file.path)}'})
-        DETACH DELETE b
-      `);
-
-      // Reset the file's node map
-      const fileNodeMap = new Map<string, string>();
-      this.fileToNodeMap.set(file.path, fileNodeMap);
-
-      // Process sections, headings, and blocks
-      const createNodeStatements: string[] = [];
-
-      for (const block of blocks) {
-        createNodeStatements.push(`
-          CREATE (:Block {
-            path: '${this.escapeCypher(file.path)}',
-            type: '${block.node.type}',
-            start_line: ${block.node.position.start.line},
-            end_line: ${block.node.position.end.line}
-          })
-        `);
-      }
-
-      // Process headings from metadata
-      // if (metadata.headings) {
-      //   for (const heading of metadata.headings) {
-      //     const nodeId = `heading-${this.getNodeId()}`;
-      //     const positionKey = this.getPositionKey(heading.position);
-      //     fileNodeMap.set(positionKey, nodeId);
-
-      //     createNodeStatements.push(`
-      //       CREATE (:Block {
-      //         id: '${nodeId}',
-      //         type: 'heading',
-      //         text: '${this.escapeCypher(heading.heading)}',
-      //         level: ${heading.level},
-      //         path: '${this.escapeCypher(file.path)}',
-      //         line: ${heading.position.start.line}
-      //       })
-      //     `);
-      //   }
-      // }
-
-      // Process lists from metadata
-      // if (metadata.listItems) {
-      //   for (const listItem of metadata.listItems) {
-      //     const nodeId = `listItem-${this.getNodeId()}`;
-      //     const positionKey = this.getPositionKey(listItem.position);
-      //     fileNodeMap.set(positionKey, nodeId);
-
-      //     // Determine if this is a task and its status
-      //     // const isTask = listItem.task !== undefined;
-      //     const level = this.calculateListItemLevel(listItem);
-
-      //     // Get content from block cache
-      //     const content = this.getBlockContentByPosition(blocks, listItem.position);
-
-      //     createNodeStatements.push(`
-      //       CREATE (:Block {
-      //         id: '${nodeId}',
-      //         type: 'listItem',
-      //         text: '${this.escapeCypher(content)}',
-      //         level: ${level},
-      //         path: '${this.escapeCypher(file.path)}',
-      //         line: ${listItem.position.start.line}
-      //       })
-      //     `);
-      //   }
-      // }
-
-
-      // Execute create node statements
-      if (createNodeStatements.length > 0) {
-        await this.kuzuClient.transaction(createNodeStatements);
-      }
-
-      // Now process relationships
-      // await this.createRelationships(file, metadata, blockCache, fileNodeMap);
-
-    } catch (error) {
-      console.error(`Error processing file ${file.path}:`, error);
     }
+
+    // Process list items (with parent-child relationships)
+    if (metadata.listItems) {
+      const listItemMap = new Map(); // Map parent IDs to node IDs
+
+      for (const listItem of metadata.listItems) {
+        const listItemId = this.generateNodeId(file.path, listItem.position);
+        const itemType = this.determineListItemType(listItem, blocks);
+
+        nodeStatements.push(this.createListItemNodeStatement(listItemId, listItem, itemType, file.path));
+
+        // Add relationship based on parent
+        if (listItem.parent < 0) {
+          // Top-level item, connected to file or nearest heading
+          const parentId = this.findContainerForPosition(listItem.position, metadata.headings, file.path);
+          relationshipStatements.push(this.createRelationshipStatement(
+            parentId,
+            listItemId,
+            'contains'
+          ));
+        } else {
+          // Child item, connected to parent list item
+          const parentNodeId = listItemMap.get(listItem.parent);
+          relationshipStatements.push(this.createRelationshipStatement(
+            parentNodeId,
+            listItemId,
+            'contains'
+          ));
+        }
+
+        // Store this item's ID for child references
+        listItemMap.set(listItem.position.start.line, listItemId);
+      }
+    }
+
+    // Process other sections (paragraphs, code blocks, etc.)
+    if (metadata.sections) {
+      for (const section of metadata.sections) {
+        if (this.isProcessableSection(section.type)) {
+          const sectionId = this.generateNodeId(file.path, section.position);
+
+          // Find block content from block cache
+          const blockContent = this.findBlockContent(section, blocks);
+
+          nodeStatements.push(this.createSectionNodeStatement(
+            sectionId,
+            section,
+            blockContent,
+            file.path
+          ));
+
+          // Add relationship to container
+          const parentId = this.findContainerForPosition(section.position, metadata.headings, file.path);
+          relationshipStatements.push(this.createRelationshipStatement(
+            parentId,
+            sectionId,
+            'contains'
+          ));
+        }
+      }
+    }
+
+    // Process explicit links
+    if (metadata.links) {
+      for (const link of metadata.links) {
+        const sourceNodeId = this.findNodeContainingPosition(link.position, metadata);
+        const targetNodeId = this.resolveLink(link.link, metadata);
+
+        if (sourceNodeId && targetNodeId) {
+          relationshipStatements.push(this.createRelationshipStatement(
+            sourceNodeId,
+            targetNodeId,
+            'links_to'
+          ));
+        }
+      }
+    }
+
+    // Execute all statements
+    await this.kuzuClient.transaction([...nodeStatements, ...relationshipStatements]);
   }
 
-  /**
-   * Create relationships between blocks in the graph.
-   * This will be implemented in step 2.
-   */
-  private async createRelationships(
-    file: TFile,
-    metadata: any,
-    blockCache: any,
-    fileNodeMap: Map<string, string>
-  ): Promise<void> {
-    // PLACEHOLDER FOR STEP 2: Relationship creation logic
-    // This will include:
-    // - Hierarchical containment relationships
-    // - Reference relationships from links
-    // - Custom relationships based on content analysis
-  }
-
 
   /**
-   * Gets a unique node ID for the current processing session
-   */
-  private getNodeId(): number {
-    return this.nodeIdCounter++;
-  }
-
-  /**
-   * Escapes a string for safe use in Cypher queries
+   * Escapes a string for safe use in Cypher queries.
+   * 
+   * @param value The string to escape
+   * @returns The escaped string
    */
   private escapeCypher(value: string): string {
-    if (!value) return "";
+    if (!value) return '';
     return value.replace(/'/g, "\\'");
   }
 
   /**
-   * Runs a query to find blocks matching specific criteria
+   * Deletes all nodes and their relationships associated with a specific file path.
    * 
-   * @param type Block type to query for
-   * @param properties Additional properties to match
-   * @returns The query results
+   * @param filePath The path of the file whose nodes should be deleted
+   * @returns Promise that resolves when the deletion is complete
    */
-  public async queryBlocks(type: string, properties: Record<string, any> = {}): Promise<any[]> {
-    let whereClause = '';
+  private async deleteExistingNodes(filePath: string): Promise<void> {
+    try {
+      // Escape any special characters in the file path for Cypher
+      const escapedPath = this.escapeCypher(filePath);
 
-    if (Object.keys(properties).length > 0) {
-      const conditions = Object.entries(properties)
-        .map(([key, value]) => {
-          if (typeof value === 'string') {
-            return `n.${key} = '${this.escapeCypher(value)}'`;
-          }
-          return `n.${key} = ${value}`;
-        })
-        .join(' AND ');
+      // Create a Cypher query to detach and delete all nodes with this path
+      const query = `
+      MATCH (b:Block {path: '${escapedPath}'})
+      DETACH DELETE b
+    `;
 
-      whereClause = `WHERE ${conditions}`;
+      // Execute the query
+      await this.kuzuClient.query(query);
+
+      console.log(`Deleted nodes for file: ${filePath}`);
+    } catch (error) {
+      console.error(`Error deleting nodes for file ${filePath}:`, error);
+      throw error;
     }
-
-    const query = `
-      MATCH (n:Block) 
-      WHERE n.type = '${type}'
-      ${whereClause ? 'AND ' + whereClause : ''}
-      RETURN n 
-      LIMIT 100
-    `;
-
-    return await this.kuzuClient.query(query);
   }
 
   /**
-   * Runs a query to find relationships between blocks
+   * Ensures that vault and folder nodes exist in the graph structure.
+   * Creates them if they don't exist.
    * 
-   * @param fromType Source block type
-   * @param relType Relationship type
-   * @param toType Target block type
-   * @returns The query results
+   * @param filePath The file path to process folders for
+   * @returns Promise that resolves with an array of folder/vault node IDs created/found
    */
-  public async queryBlockRelationships(fromType: string, relType: string, toType: string): Promise<any[]> {
-    const query = `
-      MATCH (a:Block)-[r:LINK {type: '${this.escapeCypher(relType)}'}]->(b:Block)
-      WHERE a.type = '${this.escapeCypher(fromType)}' AND b.type = '${this.escapeCypher(toType)}'
-      RETURN a, r, b
-      LIMIT 100
-    `;
-
-    return await this.kuzuClient.query(query);
+  private async ensureVaultAndFolderNodes(filePath: string): Promise<string[]> {
+    console.log(`[STUB] Would ensure vault and folder nodes for: ${filePath}`);
+    return Promise.resolve(['vault-id', 'folder-id']); // Stub IDs
   }
 
   /**
-   * Reset the internal state of the service
+   * Creates a file node and links it to its parent folder.
+   * 
+   * @param file The TFile object representing the file
+   * @returns Promise that resolves with the file node ID
    */
-  public reset(): void {
-    this.nodeIdCounter = 0;
-    this.fileToNodeMap.clear();
+  private async createFileNode(file: TFile): Promise<string> {
+    console.log(`[STUB] Would create file node for: ${file.path}`);
+    return Promise.resolve(`file-${file.path}`); // Stub ID
   }
+
+  /**
+   * Generates a unique node ID based on file path and position.
+   * 
+   * @param filePath The file path
+   * @param position The position in the file (optional)
+   * @returns A unique node ID string
+   */
+  private generateNodeId(filePath: string, position?: any): string {
+    // Stub implementation
+    if (position) {
+      return `${filePath}-${position.start.line}-${position.start.col}`;
+    }
+    return filePath;
+  }
+
+  /**
+   * Generates a file node ID.
+   * 
+   * @param filePath The file path
+   * @returns The file node ID
+   */
+  private generateFileId(filePath: string): string {
+    return `file-${filePath}`;
+  }
+
+  /**
+   * Creates a Cypher statement to create a heading node.
+   * 
+   * @param nodeId The node ID
+   * @param heading The heading metadata
+   * @param filePath The file path
+   * @returns A Cypher statement string
+   */
+  private createHeadingNodeStatement(nodeId: string, heading: any, filePath: string): string {
+    return `CREATE (:Block {id: '${this.escapeCypher(nodeId)}', type: 'heading', path: '${this.escapeCypher(filePath)}'})`;
+  }
+
+  /**
+   * Creates a Cypher statement to create a list item node.
+   * 
+   * @param nodeId The node ID
+   * @param listItem The list item metadata
+   * @param itemType The determined item type
+   * @param filePath The file path
+   * @returns A Cypher statement string
+   */
+  private createListItemNodeStatement(nodeId: string, listItem: any, itemType: string, filePath: string): string {
+    return `CREATE (:Block {id: '${this.escapeCypher(nodeId)}', type: '${itemType}', path: '${this.escapeCypher(filePath)}'})`;
+  }
+
+  /**
+   * Creates a Cypher statement to create a generic section node.
+   * 
+   * @param nodeId The node ID
+   * @param section The section metadata
+   * @param content The section content
+   * @param filePath The file path
+   * @returns A Cypher statement string
+   */
+  private createSectionNodeStatement(nodeId: string, section: any, content: string, filePath: string): string {
+    return `CREATE (:Block {id: '${this.escapeCypher(nodeId)}', type: '${section.type}', path: '${this.escapeCypher(filePath)}'})`;
+  }
+
+  /**
+   * Creates a Cypher statement to create a relationship between nodes.
+   * 
+   * @param fromId The source node ID
+   * @param toId The target node ID
+   * @param type The relationship type
+   * @param explicit Whether the relationship is explicit
+   * @returns A Cypher statement string
+   */
+  private createRelationshipStatement(fromId: string, toId: string, type: string, explicit = false): string {
+    return `MATCH (a:Block {id: '${this.escapeCypher(fromId)}'}), (b:Block {id: '${this.escapeCypher(toId)}'}) 
+          CREATE (a)-[:Link {type: '${this.escapeCypher(type)}', explicit: ${explicit}}]->(b)`;
+  }
+
+  /**
+   * Finds the container node for a given position in the file.
+   * 
+   * @param position The position to find a container for
+   * @param headings Array of headings to check
+   * @param filePath The file path
+   * @returns The ID of the container node
+   */
+  private findContainerForPosition(position: any, headings: any[] | undefined, filePath: string): string {
+    return this.generateFileId(filePath); // Default to file as container
+  }
+
+  /**
+   * Finds the node that contains a given position.
+   * 
+   * @param position The position to find
+   * @param metadata The file metadata
+   * @returns The ID of the node containing the position, or undefined
+   */
+  private findNodeContainingPosition(position: any, metadata: any): string | undefined {
+    return this.generateFileId(metadata.filePath); // Stub implementation
+  }
+
+  /**
+   * Resolves a link to a node ID.
+   * 
+   * @param link The link text (e.g., "#heading" or "file#^blockid")
+   * @param metadata The file metadata
+   * @returns The ID of the target node, or undefined if not found
+   */
+  private resolveLink(link: string, metadata: any): string | undefined {
+    return `link-target-${link}`; // Stub implementation
+  }
+
+  /**
+   * Determines the type of a list item based on its metadata and block content.
+   * 
+   * @param listItem The list item metadata
+   * @param blocks The block cache data
+   * @returns The determined item type
+   */
+  private determineListItemType(listItem: any, blocks: any[]): string {
+    if (listItem.task) {
+      switch (listItem.task) {
+        case ' ': return 'task.open';
+        case 'x': return 'task.completed';
+        case '/': return 'task.in_progress';
+        case '!': return 'task.blocked';
+        case '-': return 'task.cancelled';
+        // Add other special task types...
+        default: return 'task';
+      }
+    }
+    return 'bullet';
+  }
+
+  /**
+   * Finds the content of a block in the block cache.
+   * 
+   * @param section The section metadata
+   * @param blocks The block cache data
+   * @returns The content of the block
+   */
+  private findBlockContent(section: any, blocks: any[]): string {
+    return '[Stub content]';
+  }
+
+  /**
+   * Checks if a section type should be processed.
+   * 
+   * @param sectionType The type of section
+   * @returns True if the section should be processed
+   */
+  private isProcessableSection(sectionType: string): boolean {
+    const processableTypes = ['paragraph', 'code', 'blockquote', 'list'];
+    return processableTypes.includes(sectionType);
+  }
+
+  /**
+   * Executes a transaction with multiple Cypher statements.
+   * 
+   * @param statements Array of Cypher statements
+   * @returns Promise that resolves when the transaction is complete
+   */
+  private async executeTransaction(statements: string[]): Promise<void> {
+    console.log(`[STUB] Would execute ${statements.length} statements`);
+    return Promise.resolve();
+  }
+
 }
+
+

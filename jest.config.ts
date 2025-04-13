@@ -14,6 +14,10 @@ export default {
     '!**/node_modules/**',
     '!**/vendor/**',
   ],
+  // Mock the obsidian module
+  moduleNameMapper: {
+    '^obsidian$': '<rootDir>/__mocks__/obsidian.ts'
+  },
   testTimeout: 10000, // Default timeout of 10 seconds for all tests
   setupFilesAfterEnv: ['./__tests__/setup.ts'],
   modulePathIgnorePatterns: ['<rootDir>/__tests__/setup.ts'],
